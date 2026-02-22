@@ -5,106 +5,186 @@ from geometry_msgs.msg import Pose2D, PoseStamped
 from robot_interfaces.msg import ObstacleArray, Force2D
 
 import numpy as np
-import math
 
 
-class FieldPlanner(Node):
+class GradientDescentPlanner(Node):
 
-    def __init__(self):
-        super().__init__("field_planner")
+    def __init__(self) -> None:
+        super().__init__("gradient_descent_planner")
 
-        # Potential field parameters
-        self.declare_parameter("d0", 5.0)
-        self.declare_parameter("epsilon1", 1.0)
-        self.declare_parameter("epsilon2", 1.0)
-        self.declare_parameter("eta", 2.0)
+        # Parameters
+        self.declare_parameter("repulsion_radius", 5.0)
+        self.declare_parameter("goal_gain_near", 5.0)
+        self.declare_parameter("goal_gain_far", 3.0)
+        self.declare_parameter("repulsion_gain", 7.0)
+        self.declare_parameter("step_size", 0.35)
+        self.declare_parameter("goal_threshold", 3.0)
+        self.declare_parameter("goal_tolerance", 0.1)
 
         # Internal state
-        self.pose: Pose2D | None = None
-        self.goal: np.ndarray | None = None
-        self.obstacles = []
+        self._current_pose: Pose2D | None = None
+        self._goal_position: np.ndarray | None = None
+        self._obstacles = []
 
-        # ROS interfaces
-        self.force_pub = self.create_publisher(Force2D, "/force_vector", 10)
-
-        self.create_subscription(Pose2D, "/robot_pose", self.pose_callback, 10)
-        self.create_subscription(PoseStamped, "/goal_pose", self.goal_callback, 10)
-        self.create_subscription(
-            ObstacleArray, "/obstacles", self.obstacles_callback, 10
+        # Publishers
+        self._descent_pub = self.create_publisher(
+            Force2D, "/gradient_descent_vector", 10
         )
 
-        self.timer = self.create_timer(0.05, self.compute_force)
+        # Subscriptions
+        self.create_subscription(Pose2D, "/robot_pose", self._on_pose, 10)
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
+        self.create_subscription(ObstacleArray, "/obstacles", self._on_obstacles, 10)
 
-    # -------------------- Callbacks --------------------
+        # Timer
+        self.create_timer(0.05, self._update)
 
-    def pose_callback(self, msg: Pose2D) -> None:
-        self.pose = msg
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
 
-    def goal_callback(self, msg: PoseStamped) -> None:
-        self.goal = np.array([msg.pose.position.x, msg.pose.position.y])
+    def _on_pose(self, msg: Pose2D) -> None:
+        self._current_pose = msg
 
-    def obstacles_callback(self, msg: ObstacleArray) -> None:
-        self.obstacles = msg.obstacles
+    def _on_goal(self, msg: PoseStamped) -> None:
+        self._goal_position = np.array([msg.pose.position.x, msg.pose.position.y])
 
-    # -------------------- Core logic --------------------
+    def _on_obstacles(self, msg: ObstacleArray) -> None:
+        self._obstacles = msg.obstacles
 
-    def compute_force(self) -> None:
-        if self.pose is None or self.goal is None:
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    def _update(self) -> None:
+        if self._current_pose is None or self._goal_position is None:
             return
 
-        q = np.array([self.pose.x, self.pose.y])
+        global_position = self._position_vector(self._current_pose)
 
-        f_attr = self.attractive_force(q, self.goal)
-        f_rep = self.repulsive_force(q, self.obstacles)
+        # Condición de llegada en coordenadas globales (mapa)
+        if self._is_within_goal_tolerance(global_position):
+            self._publish_zero_vector()
+            return
 
-        f_total = f_attr + f_rep
+        # Proyección del objetivo al sistema del robot
+        goal_local = self._project_goal_to_robot_frame()
 
-        force_msg = Force2D()
-        force_msg.fx = float(f_total[0])
-        force_msg.fy = float(f_total[1])
+        gradient = (
+            self._goal_potential_gradient(goal_local)
+            + self._obstacle_potential_gradient()
+        )
 
-        self.force_pub.publish(force_msg)
+        next_position = self._gradient_descent_step(np.zeros(2), gradient)
 
-    # -------------------- Potential fields --------------------
+        self._publish_vector(next_position)
 
-    def attractive_force(self, q: np.ndarray, q_goal: np.ndarray) -> np.ndarray:
-        epsilon1 = self.get_parameter("epsilon1").value
-        epsilon2 = self.get_parameter("epsilon2").value
+    # ------------------------------------------------------------------
+    # Gradient computation
+    # ------------------------------------------------------------------
 
-        vector = q_goal - q
-        distance = np.linalg.norm(vector)
+    def _goal_potential_gradient(self, goal_local: np.ndarray) -> np.ndarray:
+        goal_gain_near = self.get_parameter("goal_gain_near").value
+        goal_gain_far = self.get_parameter("goal_gain_far").value
+        goal_threshold = self.get_parameter("goal_threshold").value
+
+        delta = -goal_local
+        distance = np.linalg.norm(delta)
 
         if distance < 1e-6:
             return np.zeros(2)
 
-        if distance < 5.0:
-            return epsilon1 * vector
+        if distance < goal_threshold:
+            return goal_gain_near * delta
 
-        return epsilon2 * vector / distance
+        return goal_gain_far * delta / distance
 
-    def repulsive_force(self, q: np.ndarray, obstacles) -> np.ndarray:
-        d0 = self.get_parameter("d0").value
-        eta = self.get_parameter("eta").value
+    def _obstacle_potential_gradient(self) -> np.ndarray:
+        repulsion_radius = self.get_parameter("repulsion_radius").value
+        repulsion_gain = self.get_parameter("repulsion_gain").value
 
-        f_rep = np.zeros(2)
+        total_gradient = np.zeros(2)
 
-        for obs in obstacles:
-            q_obs = np.array([obs.x, obs.y])
-            vector = q - q_obs
-            distance = np.linalg.norm(vector)
+        # El robot está en (0,0) en su propio marco
+        robot_position = np.zeros(2)
 
-            if distance < 1e-6 or distance > d0:
+        for obstacle in self._obstacles:
+            obstacle_position = np.array([obstacle.x, obstacle.y])
+            delta = robot_position - obstacle_position
+            distance = np.linalg.norm(delta)
+
+            if distance < 1e-6 or distance > repulsion_radius:
                 continue
 
-            gain = eta * (1 / distance - 1 / d0) * (1 / distance**3)
-            f_rep += gain * vector
+            scaling = (
+                -repulsion_gain
+                * (1 / distance - 1 / repulsion_radius)
+                * (1 / distance**3)
+            )
 
-        return f_rep
+            total_gradient += scaling * delta
+
+        return total_gradient
+
+    # ------------------------------------------------------------------
+    # Gradient descent step
+    # ------------------------------------------------------------------
+
+    def _gradient_descent_step(
+        self, position: np.ndarray, gradient: np.ndarray
+    ) -> np.ndarray:
+        step_size = self.get_parameter("step_size").value
+        magnitude = np.linalg.norm(gradient)
+
+        if magnitude < 1e-6:
+            return position
+
+        return position - step_size * gradient
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    def _project_goal_to_robot_frame(self) -> np.ndarray:
+        pose = self._current_pose
+        goal = self._goal_position
+
+        theta = pose.theta
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        dx = goal[0] - pose.x
+        dy = goal[1] - pose.y
+
+        x_local = cos_theta * dx + sin_theta * dy
+        y_local = -sin_theta * dx + cos_theta * dy
+
+        return np.array([x_local, y_local])
+
+    def _is_within_goal_tolerance(self, position: np.ndarray) -> bool:
+        tolerance = self.get_parameter("goal_tolerance").value
+        distance = np.linalg.norm(position - self._goal_position)
+        return distance < tolerance
+
+    def _position_vector(self, pose: Pose2D) -> np.ndarray:
+        return np.array([pose.x, pose.y])
+
+    def _publish_vector(self, vector: np.ndarray) -> None:
+        msg = Force2D()
+        msg.fx = float(vector[0])
+        msg.fy = float(vector[1])
+        self._descent_pub.publish(msg)
+
+    def _publish_zero_vector(self) -> None:
+        msg = Force2D()
+        msg.fx = 0.0
+        msg.fy = 0.0
+        self._descent_pub.publish(msg)
 
 
-def main():
+def main() -> None:
     rclpy.init()
-    node = FieldPlanner()
+    node = GradientDescentPlanner()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
