@@ -23,7 +23,8 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "field_planner_node = potential_fields.field_planner_node:main"
+            "field_planner_node = potential_fields.field_planner_node:main",
+            "field_planner_real_node = potential_fields.field_planner_real_node:main",
         ],
     },
 )
