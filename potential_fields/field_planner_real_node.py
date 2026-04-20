@@ -23,10 +23,11 @@ class GradientDescentPlanner(Node):
         super().__init__("gradient_descent_planner")
 
         # Parameters
-        self.declare_parameter("repulsion_radius", 5.0)
-        self.declare_parameter("goal_gain_near", 5.0)
-        self.declare_parameter("goal_gain_far", 3.0)
-        self.declare_parameter("repulsion_gain", 7.0)
+        self.declare_parameter("repulsion_radius", 3.0)
+        self.declare_parameter("goal_gain_near", 1.0)
+        self.declare_parameter("goal_gain_far", 1.0)
+        self.declare_parameter("repulsion_gain", 1.0)
+        self.declare_parameter("tangential_gain", 2.0)
         self.declare_parameter("step_size", 0.35)
         self.declare_parameter("goal_threshold", 3.0)
         self.declare_parameter("goal_tolerance", 0.5)
@@ -150,9 +151,12 @@ class GradientDescentPlanner(Node):
     def _obstacle_potential_gradient(self) -> np.ndarray:
         repulsion_radius = self.get_parameter("repulsion_radius").value
         repulsion_gain = self.get_parameter("repulsion_gain").value
+        tangential_gain = self.get_parameter("tangential_gain").value
 
         total_gradient = np.zeros(2)
         robot_position = np.zeros(2)
+
+        goal_local = self._project_goal_to_robot_frame()
 
         self.get_logger().info(
             f"[OBS] total={len(self._obstacles)}  dentro de radio({repulsion_radius}m):",
@@ -167,14 +171,40 @@ class GradientDescentPlanner(Node):
             if distance < 1e-6 or distance > repulsion_radius:
                 continue
 
-            scaling = (
-                -repulsion_gain
-                * (1 / distance - 1 / repulsion_radius)
-                * (1 / distance**3)
+            # -----------------------------
+            # Dirección hacia el objetivo
+            # -----------------------------
+            goal_dir = goal_local - robot_position
+            goal_norm = np.linalg.norm(goal_dir)
+
+            if goal_norm < 1e-6:
+                continue
+
+            g_hat = goal_dir / goal_norm
+            t_hat = np.array([-g_hat[1], g_hat[0]])
+
+            # Elegir lado consistente
+            d_hat = delta / d
+            if np.dot(t_hat, d_hat) < 0:
+                t_hat = -t_hat
+
+            # -----------------------------
+            # Repulsión clásica
+            # -----------------------------
+            grad_rep = (
+                -repulsion_gain * (1 / d - 1 / repulsion_radius) * (1 / d**3) * delta
             )
 
-            contrib = scaling * delta
-            total_gradient += contrib
+            # -----------------------------
+            # Término tangencial
+            # -----------------------------
+            td = np.dot(t_hat, delta)
+
+            grad_tang = -tangential_gain * (
+                (1 / d**3) * td * delta + (1 / d - 1 / repulsion_radius) * t_hat
+            )
+
+            total_gradient += grad_rep + grad_tang
 
             self.get_logger().info(
                 f"  obs[{i}] x={obstacle.x:.3f}  y={obstacle.y:.3f}  "
@@ -198,7 +228,7 @@ class GradientDescentPlanner(Node):
         if magnitude < 1e-6:
             return position
 
-        return position - step_size * gradient
+        return position - step_size * (gradient / magnitude)
 
     # ------------------------------------------------------------------
     # Proyección del goal con tf2
