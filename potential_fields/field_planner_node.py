@@ -84,7 +84,7 @@ class GradientDescentPlanner(Node):
         gradient = goal_grad + obstacle_grad
         logger.info(f"Total gradient: {gradient}")
 
-        next_position = self._gradient_descent_step(np.zeros(2), gradient)
+        next_position = -1 * gradient
 
         logger.info(f"Next vector (cmd): {next_position}")
 
