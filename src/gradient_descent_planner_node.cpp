@@ -1,4 +1,6 @@
 #include "potential_fields/gradient_descent_planner_node.hpp"
+#include "potential_fields/goal_projection_strategy.hpp"
+#include "potential_fields/potential_field_computer.hpp"
 
 #include <cmath>
 #include <string>
@@ -23,7 +25,8 @@ GradientDescentPlannerNode::GradientDescentPlannerNode(
   declare_parameter("goal_gain_far", 1.0);
   declare_parameter("goal_threshold", 3.0);
   declare_parameter("repulsion_gain", 1.0);
-  declare_parameter("tangential_gain", 2.0);
+  declare_parameter("tangential_gain", 3.0);
+  declare_parameter("step_size", 0.1);
 
   const auto pose_topic = get_parameter("pose_topic").as_string();
   const auto goal_topic = get_parameter("goal_topic").as_string();
@@ -117,13 +120,19 @@ void GradientDescentPlannerNode::update() {
   const Point2D grad_obs =
       PotentialFieldComputer::obstacleGradient(obstacles_, goal_local, params);
 
-  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500 /*ms*/,
-                       "[GOAL local] x=%.3f y=%.3f | "
-                       "[GRAD] goal=(%.3f, %.3f) obs=(%.3f, %.3f)",
-                       goal_local.x, goal_local.y, grad_goal.x, grad_goal.y,
-                       grad_obs.x, grad_obs.y);
+  const Point2D total_grad{(grad_goal.x + grad_obs.x),
+                           (grad_goal.y + grad_goal.y)};
 
-  // 4. cmd = -(grad_goal + grad_obstacle)
+  RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 500 /*ms*/,
+      "[GOAL local] x=%.3f y=%.3f | "
+      "[GRAD] goal=(%.3f, %.3f) obs=(%.3f, %.3f) total=(%.3f, %.3f)",
+      goal_local.x, goal_local.y, grad_goal.x, grad_goal.y, grad_obs.x,
+      grad_obs.y, total_grad.x, total_grad.y);
+
+  // const Point2D cmd = PotentialFieldComputer::normalizedGradientDescent(
+  //     *current_pose_, total_grad, params.step_size);
+
   const Point2D cmd{-(grad_goal.x + grad_obs.x), -(grad_goal.y + grad_obs.y)};
 
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500 /*ms*/,
@@ -141,7 +150,8 @@ PotentialFieldParams GradientDescentPlannerNode::readParams() const {
                               get_parameter("goal_gain_far").as_double(),
                               get_parameter("goal_threshold").as_double(),
                               get_parameter("repulsion_gain").as_double(),
-                              get_parameter("tangential_gain").as_double()};
+                              get_parameter("tangential_gain").as_double(),
+                              get_parameter("step_size").as_double()};
 }
 
 bool GradientDescentPlannerNode::isWithinGoalTolerance(

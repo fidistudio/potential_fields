@@ -1,4 +1,5 @@
 #include "potential_fields/potential_field_computer.hpp"
+#include "geometry_msgs/msg/pose2_d.hpp"
 
 #include <cmath>
 
@@ -104,6 +105,21 @@ Point2D PotentialFieldComputer::obstacleGradient(
   }
 
   return {total_x, total_y};
+}
+
+Point2D PotentialFieldComputer::normalizedGradientDescent(
+    const geometry_msgs::msg::Pose2D &current, const Point2D &gradient,
+    double step_size) {
+
+  const double magnitude = std::hypot(gradient.x, gradient.y);
+
+  // evitar división entre cero
+  if (magnitude < 1e-6) {
+    return {(current.x), (current.y)};
+  }
+
+  return {current.x - step_size * (gradient.x / magnitude),
+          current.y - step_size * (gradient.y / magnitude)};
 }
 
 } // namespace potential_fields

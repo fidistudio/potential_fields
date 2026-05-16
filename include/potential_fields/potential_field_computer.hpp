@@ -1,5 +1,6 @@
 #pragma once
 
+#include "geometry_msgs/msg/pose2_d.hpp"
 #include "potential_fields/goal_projection_strategy.hpp"
 
 #include <vector>
@@ -20,7 +21,8 @@ struct PotentialFieldParams {
   double goal_gain_far{1.0};
   double goal_threshold{3.0};
   double repulsion_gain{1.0};
-  double tangential_gain{2.0};
+  double tangential_gain{0.0};
+  double step_size{0.1};
 };
 
 /**
@@ -63,6 +65,9 @@ public:
   [[nodiscard]] static Point2D obstacleGradient(
       const std::vector<robot_interfaces::msg::Obstacle> &obstacles,
       const Point2D &goal_local, const PotentialFieldParams &params);
-};
 
+  [[nodiscard]] static Point2D
+  normalizedGradientDescent(const geometry_msgs::msg::Pose2D &current,
+                            const Point2D &gradient, double step_size);
+};
 } // namespace potential_fields
